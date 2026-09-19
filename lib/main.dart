@@ -304,8 +304,18 @@ class Intake {
   String get reminderText => 'Пора принять $name, $dose';
   String get repeatText => 'Напоминаю: пора принять $name, $dose';
 
+  /// Слот «наступил»: pending и scheduled_at <= now (оба в Asia/Almaty).
+  bool isDue(tz.TZDateTime now) {
+    final t = scheduledAt;
+    return status == 'pending' && t != null && !t.isAfter(now);
+  }
+
   /// Текст для голоса: доза приведена к читаемому виду («две таблетки»).
   String get reminderSpeech => 'Пора принять $name, ${doseForSpeech(dose)}';
+
+  /// Голос для слота, который ещё не наступил.
+  String get upcomingSpeech =>
+      'Следующий приём в $timeText: $name, ${doseForSpeech(dose)}';
   String get repeatSpeech =>
       'Напоминаю: пора принять $name, ${doseForSpeech(dose)}';
 }
@@ -495,18 +505,48 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> speak(String text) => speakRu(text);
 
+  /// Автоозвучка «Пора принять …» — ТОЛЬКО если слот наступил
+  /// (scheduled_at <= now в Asia/Almaty) и он pending. [force] снимает лишь
+  /// 5-минутный интервал между повторами, но не условие «время наступило».
   void maybeSpeakDueReminder({bool force = false}) {
     final n = next;
-    if (n == null || n.scheduledAt == null) return;
-    if (n.status != 'pending') return;
     final now = nowAlmaty();
-    if (n.scheduledAt!.isAfter(now)) return;
+    if (n == null || n.scheduledAt == null) {
+      debugPrint('SilverCare: speak? next=null now=$now → skip');
+      return;
+    }
+    final due = n.isDue(now);
+    debugPrint(
+      'SilverCare: speak? intake=${n.id} status=${n.status} '
+      'scheduled_at=${n.scheduledAt} now=$now due=$due force=$force',
+    );
+    if (!due) return;
     final last = lastSpokenAt[n.id];
     if (!force && last != null && now.difference(last) < kVoiceRepeatInterval) {
+      debugPrint('SilverCare: speak? last=$last → within interval, skip');
       return;
     }
     lastSpokenAt[n.id] = now;
+    debugPrint('SilverCare: speak! ${last == null ? 'reminder' : 'repeat'}');
     speak(last == null ? n.reminderSpeech : n.repeatSpeech);
+  }
+
+  /// Кнопка «ПОВТОРИТЬ ВСЛУХ»: по требованию пользователя, без ограничений
+  /// по интервалу, но текст зависит от того, наступил ли слот.
+  void speakCurrent(Intake? n, int missed) {
+    if (n == null) {
+      speak(
+        missed > 0 ? 'На сегодня приёмов больше нет' : 'На сегодня всё принято',
+      );
+      return;
+    }
+    final now = nowAlmaty();
+    final due = n.isDue(now);
+    debugPrint(
+      'SilverCare: repeat button intake=${n.id} '
+      'scheduled_at=${n.scheduledAt} now=$now due=$due',
+    );
+    speak(due ? n.reminderSpeech : n.upcomingSpeech);
   }
 
   // ---------------- Уведомления ----------------
@@ -743,13 +783,7 @@ class _HomeScreenState extends State<HomeScreen> {
             label: 'ПОВТОРИТЬ ВСЛУХ',
             color: kYellow,
             textColor: Colors.black,
-            onPressed: () => speak(
-              n == null
-                  ? (missed > 0
-                        ? 'На сегодня приёмов больше нет'
-                        : 'На сегодня всё принято')
-                  : n.reminderSpeech,
-            ),
+            onPressed: () => speakCurrent(n, missed),
           ),
           const SizedBox(height: kPad),
           BigButton(
