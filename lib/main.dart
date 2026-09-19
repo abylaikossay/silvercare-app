@@ -95,6 +95,31 @@ Future<void> speakRu(String text) async {
   }
 }
 
+/// true, если приложение холодно запущено тапом по уведомлению (или его
+/// full-screen intent). Читается один раз в _HomeScreenState._start().
+bool launchedFromNotification = false;
+
+/// Тап по уведомлению при живом приложении: инкремент → HomeScreen
+/// перезагружает today и озвучивает due-слот немедленно.
+final ValueNotifier<int> notificationTap = ValueNotifier<int>(0);
+
+/// Android 14+: разрешение на full-screen intent (будильник поверх экрана
+/// блокировки). Плагин сам проверяет canUseFullScreenIntent() и, если
+/// не разрешено, открывает системные настройки; ниже — только результат.
+Future<void> requestFullScreenIntent() async {
+  final android = notifications
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >();
+  if (android == null) return;
+  try {
+    final granted = await android.requestFullScreenIntentPermission();
+    debugPrint('SilverCare: full-screen intent allowed = $granted');
+  } catch (e) {
+    debugPrint('SilverCare: full-screen intent request failed: $e');
+  }
+}
+
 /// Режим планирования Android-уведомлений: точный, если система разрешила,
 /// иначе fallback на inexact. Выбирается один раз при старте.
 AndroidScheduleMode scheduleMode = AndroidScheduleMode.inexactAllowWhileIdle;
@@ -130,13 +155,26 @@ Future<void> main() async {
 
   await notifications.initialize(
     settings: const InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      android: AndroidInitializationSettings('ic_stat_silvercare'),
       iOS: DarwinInitializationSettings(
         requestAlertPermission: true,
         requestBadgePermission: false,
         requestSoundPermission: true,
       ),
     ),
+    onDidReceiveNotificationResponse: (_) {
+      debugPrint('SilverCare: notification tapped (app alive)');
+      notificationTap.value++;
+    },
+  );
+  try {
+    final launch = await notifications.getNotificationAppLaunchDetails();
+    launchedFromNotification = launch?.didNotificationLaunchApp ?? false;
+  } catch (e) {
+    debugPrint('SilverCare: getNotificationAppLaunchDetails failed: $e');
+  }
+  debugPrint(
+    'SilverCare: launched from notification = $launchedFromNotification',
   );
   if (defaultTargetPlatform == TargetPlatform.android) {
     await notifications
@@ -145,6 +183,7 @@ Future<void> main() async {
         >()
         ?.requestNotificationsPermission();
     await pickAndroidScheduleMode();
+    await requestFullScreenIntent();
   } else if (defaultTargetPlatform == TargetPlatform.iOS) {
     await notifications
         .resolvePlatformSpecificImplementation<
@@ -270,6 +309,11 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _start();
     refreshTimer = Timer.periodic(kRefreshInterval, (_) => loadToday());
+    notificationTap.addListener(_onNotificationTap);
+  }
+
+  void _onNotificationTap() {
+    loadToday(speakNow: true);
   }
 
   Future<void> _start() async {
@@ -292,7 +336,9 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     setState(() => patientId = saved);
-    await loadToday();
+    final speakNow = launchedFromNotification;
+    launchedFromNotification = false;
+    await loadToday(speakNow: speakNow);
   }
 
   Future<void> selectPatient(int id) async {
@@ -316,12 +362,15 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     refreshTimer?.cancel();
+    notificationTap.removeListener(_onNotificationTap);
     super.dispose();
   }
 
   // ---------------- Сеть ----------------
 
-  Future<void> loadToday() async {
+  /// [speakNow] — озвучить due-слот сразу (запуск/тап из уведомления),
+  /// игнорируя интервал 5 минут между голосовыми повторами.
+  Future<void> loadToday({bool speakNow = false}) async {
     final id = patientId;
     if (id == null) return; // пациент ещё не выбран
     try {
@@ -363,7 +412,12 @@ class _HomeScreenState extends State<HomeScreen> {
       });
 
       await scheduleNotifications(parsed);
-      maybeSpeakDueReminder();
+      if (speakNow) {
+        await _ttsReady;
+        maybeSpeakDueReminder(force: true);
+      } else {
+        maybeSpeakDueReminder();
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -398,14 +452,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> speak(String text) => speakRu(text);
 
-  void maybeSpeakDueReminder() {
+  void maybeSpeakDueReminder({bool force = false}) {
     final n = next;
     if (n == null || n.scheduledAt == null) return;
     if (n.status != 'pending') return;
     final now = nowAlmaty();
     if (n.scheduledAt!.isAfter(now)) return;
     final last = lastSpokenAt[n.id];
-    if (last != null && now.difference(last) < kVoiceRepeatInterval) return;
+    if (!force && last != null && now.difference(last) < kVoiceRepeatInterval) {
+      return;
+    }
     lastSpokenAt[n.id] = now;
     speak(last == null ? n.reminderSpeech : n.repeatSpeech);
   }
@@ -418,12 +474,22 @@ class _HomeScreenState extends State<HomeScreen> {
       final now = nowAlmaty();
       const details = NotificationDetails(
         android: AndroidNotificationDetails(
-          'silvercare_reminders',
+          // Новый id: у уже созданного канала Android не меняет звук/поток.
+          'silvercare_alarms_v2',
           'Напоминания о лекарствах',
-          channelDescription: 'Напоминания о приёме лекарств',
+          channelDescription: 'Напоминания о приёме лекарств (будильник)',
+          icon: 'ic_stat_silvercare',
+          color: Color(0xFF5E9484),
           importance: Importance.max,
-          priority: Priority.high,
+          priority: Priority.max,
+          category: AndroidNotificationCategory.alarm,
+          fullScreenIntent: true,
+          ongoing: false,
           playSound: true,
+          sound: UriAndroidNotificationSound(
+            'content://settings/system/alarm_alert',
+          ),
+          audioAttributesUsage: AudioAttributesUsage.alarm,
           enableVibration: true,
         ),
         iOS: DarwinNotificationDetails(presentAlert: true, presentSound: true),
