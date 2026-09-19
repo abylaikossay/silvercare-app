@@ -23,11 +23,9 @@ const String kApiUrl = String.fromEnvironment(
   'API_URL',
   defaultValue: 'https://silvercare-api-production.up.railway.app',
 );
-// int.fromEnvironment сам возвращает defaultValue, если PATIENT_ID не задан
-// или не парсится в int.
-const int kPatientId = int.fromEnvironment('PATIENT_ID', defaultValue: 1);
+
+/// Единственный источник id пациента — shared_preferences.
 const String kPrefPatientId = 'patient_id';
-const Duration kSecretHold = Duration(seconds: 3);
 const Duration kRefreshInterval = Duration(seconds: 60);
 const Duration kHttpTimeout = Duration(seconds: 8);
 const Duration kVoiceRepeatInterval = Duration(minutes: 10);
@@ -250,12 +248,12 @@ class _HomeScreenState extends State<HomeScreen> {
   bool exerciseOpen = false;
   bool pickerOpen = false;
 
-  /// Текущий пациент: из shared_preferences, иначе из --dart-define.
-  int patientId = kPatientId;
+  /// Текущий пациент из shared_preferences. null — ещё не выбран
+  /// (первый запуск), тогда показывается обязательный выбор.
+  int? patientId;
   String patientName = '';
 
   Timer? refreshTimer;
-  Timer? secretHoldTimer;
 
   /// Время последней озвучки по intake_id — повтор не чаще раза в 10 минут.
   final Map<int, tz.TZDateTime> lastSpokenAt = {};
@@ -268,14 +266,25 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _start() async {
+    int? saved;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getInt(kPrefPatientId);
-      if (saved != null) patientId = saved;
+      saved = prefs.getInt(kPrefPatientId);
     } catch (e) {
       debugPrint('SilverCare: prefs read failed: $e');
     }
-    debugPrint('SilverCare: patientId = $patientId');
+    debugPrint('SilverCare: saved patientId = $saved');
+    if (!mounted) return;
+    if (saved == null) {
+      // Первый запуск: today не грузим, сразу обязательный выбор пациента.
+      setState(() {
+        patientId = null;
+        loading = false;
+        pickerOpen = true;
+      });
+      return;
+    }
+    setState(() => patientId = saved);
     await loadToday();
   }
 
@@ -300,16 +309,17 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     refreshTimer?.cancel();
-    secretHoldTimer?.cancel();
     super.dispose();
   }
 
   // ---------------- Сеть ----------------
 
   Future<void> loadToday() async {
+    final id = patientId;
+    if (id == null) return; // пациент ещё не выбран
     try {
       final res = await http
-          .get(Uri.parse('$kApiUrl/patients/$patientId/today'))
+          .get(Uri.parse('$kApiUrl/patients/$id/today'))
           .timeout(kHttpTimeout);
       if (res.statusCode < 200 || res.statusCode >= 300) {
         throw Exception('HTTP ${res.statusCode}');
@@ -461,7 +471,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: PatientPicker(
                   currentId: patientId,
                   onSelect: selectPatient,
-                  onClose: () => setState(() => pickerOpen = false),
+                  // При первом запуске закрыть нельзя, пока не выбран пациент.
+                  onClose: patientId == null
+                      ? null
+                      : () => setState(() => pickerOpen = false),
                 ),
               ),
           ],
@@ -607,34 +620,34 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () => setState(() => exerciseOpen = true),
           ),
           const SizedBox(height: kPad),
-          // Скрытый вход: удержание ~3 с на счётчике открывает выбор пациента.
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onLongPressStart: (_) {
-              secretHoldTimer?.cancel();
-              secretHoldTimer = Timer(kSecretHold, () {
-                if (mounted) setState(() => pickerOpen = true);
-              });
-            },
-            onLongPressEnd: (_) => secretHoldTimer?.cancel(),
-            onLongPressCancel: () => secretHoldTimer?.cancel(),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: kPad),
-              child: Column(
-                children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: kPad),
+            child: Column(
+              children: [
+                Text(
+                  'Сегодня: принято $taken / пропущено $missed',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 18, color: Colors.white70),
+                ),
+                if (patientName.isNotEmpty)
                   Text(
-                    'Сегодня: принято $taken / пропущено $missed',
+                    patientName,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 18, color: Colors.white70),
+                    style: const TextStyle(fontSize: 18, color: Colors.grey),
                   ),
-                  if (patientName.isNotEmpty)
-                    Text(
-                      patientName,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 18, color: Colors.grey),
-                    ),
-                ],
-              ),
+                TextButton(
+                  onPressed: () => setState(() => pickerOpen = true),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF9A9A9A),
+                    minimumSize: const Size(0, 48),
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  child: const Text(
+                    'Сменить пациента',
+                    style: TextStyle(fontSize: 22),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: kPad),
@@ -1063,9 +1076,12 @@ class PatientPicker extends StatefulWidget {
     required this.onClose,
   });
 
-  final int currentId;
+  /// null — первый запуск, пациент ещё не выбран.
+  final int? currentId;
   final Future<void> Function(int id) onSelect;
-  final VoidCallback onClose;
+
+  /// null — закрыть нельзя (обязательный выбор при первом запуске).
+  final VoidCallback? onClose;
 
   @override
   State<PatientPicker> createState() => _PatientPickerState();
@@ -1127,14 +1143,32 @@ class _PatientPickerState extends State<PatientPicker> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Expanded(child: buildBody()),
-          BigButton(
-            label: 'ЗАКРЫТЬ',
-            color: Colors.white,
-            textColor: Colors.black,
-            minHeight: 140,
-            onPressed: widget.onClose,
-          ),
-          const SizedBox(height: kPad),
+          if (error) ...[
+            BigButton(
+              label: 'ПОВТОРИТЬ',
+              color: kRed,
+              textColor: kText,
+              minHeight: 140,
+              onPressed: () {
+                setState(() {
+                  loading = true;
+                  error = false;
+                });
+                load();
+              },
+            ),
+            const SizedBox(height: kPad),
+          ],
+          if (widget.onClose != null) ...[
+            BigButton(
+              label: 'ЗАКРЫТЬ',
+              color: Colors.white,
+              textColor: Colors.black,
+              minHeight: 140,
+              onPressed: widget.onClose,
+            ),
+            const SizedBox(height: kPad),
+          ],
         ],
       ),
     );
@@ -1171,11 +1205,21 @@ class _PatientPickerState extends State<PatientPicker> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Padding(
-            padding: EdgeInsets.fromLTRB(kPad, 24, kPad, kPad),
+            padding: EdgeInsets.only(top: 24),
+            child: Image(
+              image: AssetImage('assets/logo.png'),
+              width: 120,
+              height: 120,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(kPad),
             child: Text(
-              'Кто пользуется телефоном?',
+              widget.currentId == null
+                  ? 'Кто пользуется телефоном?'
+                  : 'Сменить пациента',
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: kTitleSize,
                 fontWeight: FontWeight.bold,
                 color: kText,
