@@ -535,7 +535,12 @@ class _HomeScreenState extends State<HomeScreen> {
           audioAttributesUsage: AudioAttributesUsage.alarm,
           enableVibration: true,
         ),
-        iOS: DarwinNotificationDetails(presentAlert: true, presentSound: true),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentSound: true,
+          sound: 'silvercare_alarm.wav',
+          interruptionLevel: InterruptionLevel.timeSensitive,
+        ),
       );
       var scheduled = 0;
       for (final it in list) {
