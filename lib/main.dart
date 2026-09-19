@@ -6,6 +6,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
@@ -149,53 +150,87 @@ Future<void> pickAndroidScheduleMode() async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  tzdata.initializeTimeZones();
-  almaty = tz.getLocation('Asia/Almaty');
-  tz.setLocalLocation(almaty);
+  // Глобальные обработчики: любое исключение — в лог, а не в «немой» экран.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('SilverCare: FlutterError: ${details.exceptionAsString()}');
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('SilverCare: uncaught: $error\n$stack');
+    return true;
+  };
 
-  await notifications.initialize(
-    settings: const InitializationSettings(
-      android: AndroidInitializationSettings('ic_stat_silvercare'),
-      iOS: DarwinInitializationSettings(
-        requestAlertPermission: true,
-        requestBadgePermission: false,
-        requestSoundPermission: true,
+  // Ни один шаг инициализации не должен помешать runApp.
+  await _guard('timezone', () async {
+    tzdata.initializeTimeZones();
+    almaty = tz.getLocation('Asia/Almaty');
+    tz.setLocalLocation(almaty);
+  });
+
+  await _guard('notifications.initialize', () async {
+    await notifications.initialize(
+      settings: const InitializationSettings(
+        android: AndroidInitializationSettings('ic_stat_silvercare'),
+        iOS: DarwinInitializationSettings(
+          requestAlertPermission: true,
+          requestBadgePermission: false,
+          requestSoundPermission: true,
+        ),
       ),
-    ),
-    onDidReceiveNotificationResponse: (_) {
-      debugPrint('SilverCare: notification tapped (app alive)');
-      notificationTap.value++;
-    },
-  );
-  try {
+      onDidReceiveNotificationResponse: (_) {
+        debugPrint('SilverCare: notification tapped (app alive)');
+        notificationTap.value++;
+      },
+    );
+  });
+
+  await _guard('getNotificationAppLaunchDetails', () async {
     final launch = await notifications.getNotificationAppLaunchDetails();
     launchedFromNotification = launch?.didNotificationLaunchApp ?? false;
-  } catch (e) {
-    debugPrint('SilverCare: getNotificationAppLaunchDetails failed: $e');
-  }
-  debugPrint(
-    'SilverCare: launched from notification = $launchedFromNotification',
-  );
-  if (defaultTargetPlatform == TargetPlatform.android) {
-    await notifications
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >()
-        ?.requestNotificationsPermission();
-    await pickAndroidScheduleMode();
-    await requestFullScreenIntent();
-  } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-    await notifications
-        .resolvePlatformSpecificImplementation<
-          IOSFlutterLocalNotificationsPlugin
-        >()
-        ?.requestPermissions(alert: true, sound: true);
-  }
+    debugPrint(
+      'SilverCare: launched from notification = $launchedFromNotification',
+    );
+  });
 
   // Запускаем инициализацию TTS, но не блокируем старт UI.
   unawaited(_ttsReady);
 
+  // UI показываем сразу; системные диалоги разрешений — уже поверх него.
   runApp(const SilverCareApp());
+  unawaited(_requestPermissions());
+}
+
+/// Запросы разрешений после runApp: диалоги (POST_NOTIFICATIONS, точные
+/// будильники, full-screen intent) не должны держать пустой splash.
+Future<void> _requestPermissions() async {
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    await _guard('requestNotificationsPermission', () async {
+      await notifications
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.requestNotificationsPermission();
+    });
+    await _guard('pickAndroidScheduleMode', pickAndroidScheduleMode);
+    await _guard('requestFullScreenIntent', requestFullScreenIntent);
+  } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+    await _guard('iOS requestPermissions', () async {
+      await notifications
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >()
+          ?.requestPermissions(alert: true, sound: true);
+    });
+  }
+}
+
+/// Выполнить шаг инициализации, проглотив и залогировав любую ошибку.
+Future<void> _guard(String name, Future<void> Function() step) async {
+  try {
+    await step();
+  } catch (e, st) {
+    debugPrint('SilverCare: init step "$name" failed: $e\n$st');
+  }
 }
 
 class SilverCareApp extends StatelessWidget {
@@ -294,6 +329,10 @@ class _HomeScreenState extends State<HomeScreen> {
   bool exerciseOpen = false;
   bool pickerOpen = false;
 
+  /// Через 3 с без данных и без ошибки показываем «Загрузка…».
+  bool slowLoading = false;
+  Timer? slowLoadingTimer;
+
   /// Текущий пациент из shared_preferences. null — ещё не выбран
   /// (первый запуск), тогда показывается обязательный выбор.
   int? patientId;
@@ -310,6 +349,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _start();
     refreshTimer = Timer.periodic(kRefreshInterval, (_) => loadToday());
     notificationTap.addListener(_onNotificationTap);
+    slowLoadingTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && loading) setState(() => slowLoading = true);
+    });
   }
 
   void _onNotificationTap() {
@@ -362,6 +404,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     refreshTimer?.cancel();
+    slowLoadingTimer?.cancel();
     notificationTap.removeListener(_onNotificationTap);
     super.dispose();
   }
@@ -558,11 +601,29 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget buildMain() {
     if (loading) {
-      return const Center(
-        child: SizedBox(
-          width: 90,
-          height: 90,
-          child: CircularProgressIndicator(color: kText, strokeWidth: 8),
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 90,
+              height: 90,
+              child: CircularProgressIndicator(color: kText, strokeWidth: 8),
+            ),
+            if (slowLoading)
+              const Padding(
+                padding: EdgeInsets.all(kPad),
+                child: Text(
+                  'Загрузка…',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: kTitleSize,
+                    fontWeight: FontWeight.bold,
+                    color: kText,
+                  ),
+                ),
+              ),
+          ],
         ),
       );
     }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  shrinkResources в release вырезает ресурсы, на которые нет ссылки из кода.
+  Иконка уведомления задаётся строкой из Dart, поэтому R8 её не видит и
+  удаляет → PlatformException(invalid_icon) в notifications.initialize().
+  Держим все drawable и иконку лаунчера (по README flutter_local_notifications).
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/*,@mipmap/ic_launcher,@mipmap/ic_launcher_foreground,@raw/*" />
