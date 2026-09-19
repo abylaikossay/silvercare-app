@@ -18,6 +18,7 @@ import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 import 'exercises.dart';
+import 'speech.dart';
 
 const String kApiUrl = String.fromEnvironment(
   'API_URL',
@@ -28,9 +29,9 @@ const String kApiUrl = String.fromEnvironment(
 const String kPrefPatientId = 'patient_id';
 const Duration kRefreshInterval = Duration(seconds: 60);
 const Duration kHttpTimeout = Duration(seconds: 8);
-const Duration kVoiceRepeatInterval = Duration(minutes: 10);
-const Duration kNotifyRepeatStep = Duration(minutes: 10);
-const int kNotifyRepeatCount = 6; // t, t+10 … t+50
+const Duration kVoiceRepeatInterval = Duration(minutes: 5);
+const Duration kNotifyRepeatStep = Duration(minutes: 5);
+const int kNotifyRepeatCount = 12; // t, t+5 … t+55
 const Duration kNotifyLookback = Duration(minutes: 60);
 
 /// Единственный часовой пояс приложения. Часы устройства не используются.
@@ -225,8 +226,14 @@ class Intake {
         '${t.minute.toString().padLeft(2, '0')}';
   }
 
+  /// Текст для уведомлений (как есть).
   String get reminderText => 'Пора принять $name, $dose';
   String get repeatText => 'Напоминаю: пора принять $name, $dose';
+
+  /// Текст для голоса: доза приведена к читаемому виду («две таблетки»).
+  String get reminderSpeech => 'Пора принять $name, ${doseForSpeech(dose)}';
+  String get repeatSpeech =>
+      'Напоминаю: пора принять $name, ${doseForSpeech(dose)}';
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +407,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final last = lastSpokenAt[n.id];
     if (last != null && now.difference(last) < kVoiceRepeatInterval) return;
     lastSpokenAt[n.id] = now;
-    speak(last == null ? n.reminderText : n.repeatText);
+    speak(last == null ? n.reminderSpeech : n.repeatSpeech);
   }
 
   // ---------------- Уведомления ----------------
@@ -431,7 +438,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final when = start.add(kNotifyRepeatStep * i);
           if (!when.isAfter(now)) continue;
           await notifications.zonedSchedule(
-            id: it.id * 10 + i,
+            id: it.id * 100 + i,
             title: 'SilverCare',
             body: i == 0 ? it.reminderText : it.repeatText,
             scheduledDate: when,
@@ -609,7 +616,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? (missed > 0
                         ? 'На сегодня приёмов больше нет'
                         : 'На сегодня всё принято')
-                  : n.reminderText,
+                  : n.reminderSpeech,
             ),
           ),
           const SizedBox(height: kPad),
