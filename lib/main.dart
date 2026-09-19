@@ -1,7 +1,7 @@
 // SilverCare: Контроль лекарств — демо для пожилых людей (один экран).
 //
-// Запуск с другим адресом бэкенда:
-//   flutter run --dart-define=API_URL=https://your-backend.up.railway.app
+// По умолчанию ходит на прод (Railway). Для локального бэка:
+//   flutter run --dart-define=API_URL=http://10.0.2.2:8000
 
 import 'dart:async';
 import 'dart:convert';
@@ -21,7 +21,7 @@ import 'exercises.dart';
 
 const String kApiUrl = String.fromEnvironment(
   'API_URL',
-  defaultValue: 'http://10.0.2.2:8000',
+  defaultValue: 'https://silvercare-api-production.up.railway.app',
 );
 // int.fromEnvironment сам возвращает defaultValue, если PATIENT_ID не задан
 // или не парсится в int.

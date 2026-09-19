@@ -29,24 +29,24 @@ flutter run
 - `GET {API_URL}/patients/1/today`
 - `POST {API_URL}/intakes/{intake_id}/take`
 
-По умолчанию `API_URL = http://10.0.2.2:8000` — это `localhost:8000` хост-машины
-с точки зрения Android-эмулятора. Значит, локально нужно поднять бэк:
+По умолчанию приложение ходит на прод:
+`API_URL = https://silvercare-api-production.up.railway.app`. Ничего поднимать
+не нужно — просто запустите.
+
+Для локального бэка передайте `--dart-define=API_URL=http://10.0.2.2:8000`
+(`10.0.2.2` — это `localhost` хост-машины с точки зрения Android-эмулятора) и
+поднимите сервер:
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Чтобы указать другой адрес (например, Railway), передайте `--dart-define`:
-
-```bash
-flutter run --dart-define=API_URL=https://your-backend.up.railway.app
-flutter build apk --debug --dart-define=API_URL=https://your-backend.up.railway.app
+flutter run --dart-define=API_URL=http://10.0.2.2:8000
+flutter build apk --debug --dart-define=API_URL=http://10.0.2.2:8000
 ```
 
 Пациент задаётся тоже через `--dart-define` (`PATIENT_ID`, по умолчанию `1`):
 
 ```bash
-flutter run --dart-define=API_URL=https://your-backend.up.railway.app --dart-define=PATIENT_ID=2
+flutter run --dart-define=API_URL=http://10.0.2.2:8000 --dart-define=PATIENT_ID=2
 ```
 
 Приложение собирается под конкретного пациента, сам пациент ничего не настраивает.
@@ -58,7 +58,7 @@ flutter run --dart-define=API_URL=https://your-backend.up.railway.app --dart-def
 под счётчиком.
 
 В Android Studio: Run → Edit Configurations → поле «Additional run args» →
-`--dart-define=API_URL=https://...`.
+`--dart-define=API_URL=http://10.0.2.2:8000`.
 
 Если сервер недоступен, на экране будет «Нет связи с сервером» и кнопка
 «ПОВТОРИТЬ».
