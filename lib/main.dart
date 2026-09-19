@@ -579,7 +579,6 @@ class _HomeScreenState extends State<HomeScreen> {
           presentAlert: true,
           presentSound: true,
           sound: 'silvercare_alarm.wav',
-          interruptionLevel: InterruptionLevel.timeSensitive,
         ),
       );
       var scheduled = 0;
