@@ -20,7 +20,9 @@ const String kApiUrl = String.fromEnvironment(
   'API_URL',
   defaultValue: 'http://10.0.2.2:8000',
 );
-const int kPatientId = 1;
+// int.fromEnvironment сам возвращает defaultValue, если PATIENT_ID не задан
+// или не парсится в int.
+const int kPatientId = int.fromEnvironment('PATIENT_ID', defaultValue: 1);
 const Duration kRefreshInterval = Duration(seconds: 60);
 const Duration kHttpTimeout = Duration(seconds: 8);
 

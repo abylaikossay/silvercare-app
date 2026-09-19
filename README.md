@@ -43,6 +43,14 @@ flutter run --dart-define=API_URL=https://your-backend.up.railway.app
 flutter build apk --debug --dart-define=API_URL=https://your-backend.up.railway.app
 ```
 
+Пациент задаётся тоже через `--dart-define` (`PATIENT_ID`, по умолчанию `1`):
+
+```bash
+flutter run --dart-define=API_URL=https://your-backend.up.railway.app --dart-define=PATIENT_ID=2
+```
+
+Приложение собирается под конкретного пациента, сам пациент ничего не настраивает.
+
 В Android Studio: Run → Edit Configurations → поле «Additional run args» →
 `--dart-define=API_URL=https://...`.
 
