@@ -17,6 +17,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
+import 'exercises.dart';
+
 const String kApiUrl = String.fromEnvironment(
   'API_URL',
   defaultValue: 'http://10.0.2.2:8000',
@@ -698,8 +700,10 @@ class BigButton extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Упражнение для памяти (полноэкранный overlay)
+// Упражнение для памяти: сессия из 3 заданий (полноэкранный overlay)
 // ---------------------------------------------------------------------------
+enum _ExPhase { memorize, question, result, summary }
+
 class MemoryExercise extends StatefulWidget {
   const MemoryExercise({super.key, required this.onClose, required this.speak});
 
@@ -711,36 +715,26 @@ class MemoryExercise extends StatefulWidget {
 }
 
 class _MemoryExerciseState extends State<MemoryExercise> {
-  late final List<int> digits;
-  late final List<int> options;
-  int secondsLeft = 5;
-  bool showQuestion = false;
-  bool? correct; // null — ещё не ответил
+  static const int kTasks = 3;
+  static const int kMemorizeSeconds = 5;
+  static const Duration kResultPause = Duration(seconds: 2);
+  static const double kAnswerMinHeight = 180;
+
+  final Random rnd = Random();
+  late List<Exercise> session;
+  int index = 0;
+  int correctCount = 0;
+  _ExPhase phase = _ExPhase.memorize;
+  int secondsLeft = kMemorizeSeconds;
+  bool? lastCorrect;
   Timer? timer;
+
+  Exercise get ex => session[index];
 
   @override
   void initState() {
     super.initState();
-    final rnd = Random();
-    // Три разные цифры 1..9.
-    final pool = List<int>.generate(9, (i) => i + 1)..shuffle(rnd);
-    digits = pool.take(3).toList();
-    options = List<int>.from(digits)..shuffle(rnd);
-
-    widget.speak('Запомните цифры: ${digits.join(', ')}');
-    timer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) return;
-      if (secondsLeft <= 1) {
-        t.cancel();
-        setState(() {
-          secondsLeft = 0;
-          showQuestion = true;
-        });
-        widget.speak('Какое число было первым?');
-      } else {
-        setState(() => secondsLeft--);
-      }
-    });
+    startSession();
   }
 
   @override
@@ -749,11 +743,62 @@ class _MemoryExerciseState extends State<MemoryExercise> {
     super.dispose();
   }
 
-  void answer(int value) {
-    if (correct != null) return;
-    final ok = value == digits.first;
-    setState(() => correct = ok);
-    widget.speak(ok ? 'Верно!' : 'Неверно, было ${digits.first}');
+  void startSession() {
+    timer?.cancel();
+    session = makeSession(rnd, nowAlmaty(), count: kTasks);
+    index = 0;
+    correctCount = 0;
+    lastCorrect = null;
+    startTask();
+  }
+
+  void startTask() {
+    timer?.cancel();
+    lastCorrect = null;
+    if (!ex.hasMemorizePhase) {
+      phase = _ExPhase.question;
+      if (mounted) setState(() {});
+      widget.speak(ex.question);
+      return;
+    }
+    phase = _ExPhase.memorize;
+    secondsLeft = kMemorizeSeconds;
+    if (mounted) setState(() {});
+    widget.speak('Запомните: ${ex.shown.map((e) => e.label).join(', ')}');
+    timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return;
+      if (secondsLeft <= 1) {
+        t.cancel();
+        setState(() {
+          secondsLeft = 0;
+          phase = _ExPhase.question;
+        });
+        widget.speak(ex.question);
+      } else {
+        setState(() => secondsLeft--);
+      }
+    });
+  }
+
+  void answer(String label) {
+    if (phase != _ExPhase.question) return;
+    final ok = label == ex.correct;
+    if (ok) correctCount++;
+    setState(() {
+      lastCorrect = ok;
+      phase = _ExPhase.result;
+    });
+    widget.speak(ok ? 'Верно!' : 'Неверно. Было: ${ex.correct}');
+    timer = Timer(kResultPause, () {
+      if (!mounted) return;
+      if (index + 1 < session.length) {
+        index++;
+        startTask();
+      } else {
+        setState(() => phase = _ExPhase.summary);
+        widget.speak('Верно: $correctCount из ${session.length}');
+      }
+    });
   }
 
   @override
@@ -763,7 +808,17 @@ class _MemoryExerciseState extends State<MemoryExercise> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(child: Center(child: buildBody())),
+          Expanded(child: buildBody()),
+          if (phase == _ExPhase.summary) ...[
+            BigButton(
+              label: 'ЕЩЁ',
+              color: kGreen,
+              textColor: Colors.black,
+              minHeight: kAnswerMinHeight,
+              onPressed: () => setState(startSession),
+            ),
+            const SizedBox(height: kPad),
+          ],
           BigButton(
             label: 'ЗАКРЫТЬ',
             color: Colors.white,
@@ -778,92 +833,224 @@ class _MemoryExerciseState extends State<MemoryExercise> {
   }
 
   Widget buildBody() {
-    if (!showQuestion) {
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(kPad),
-            child: Text(
-              'Запомните цифры',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: kSubSize,
-                color: kText,
-                fontWeight: FontWeight.bold,
+    switch (phase) {
+      case _ExPhase.memorize:
+        return buildMemorize();
+      case _ExPhase.question:
+        return buildQuestion();
+      case _ExPhase.result:
+        return buildResult();
+      case _ExPhase.summary:
+        return buildSummary();
+    }
+  }
+
+  Widget progressLabel() => Padding(
+    padding: const EdgeInsets.only(top: 8),
+    child: Text(
+      'Задание ${index + 1} из ${session.length}',
+      textAlign: TextAlign.center,
+      style: const TextStyle(fontSize: 18, color: Colors.white70),
+    ),
+  );
+
+  /// Отрисовка показанных элементов в зависимости от вида задания.
+  Widget showItems(List<ExItem> items, {double digitSize = 120}) {
+    switch (ex.kind) {
+      case ShowKind.digits:
+        return Text(
+          items.map((e) => e.label).join('   '),
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: digitSize,
+            fontWeight: FontWeight.w900,
+            color: kYellow,
+            height: 1.0,
+          ),
+        );
+      case ShowKind.colors:
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            for (final it in items)
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 96,
+                    height: 96,
+                    decoration: BoxDecoration(
+                      color: Color(it.color ?? 0xFFFFFFFF),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white, width: 3),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    it.label,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: kText,
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        );
+      case ShowKind.words:
+      case ShowKind.none:
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final it in items)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text(
+                  it.label,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 56,
+                    fontWeight: FontWeight.w900,
+                    color: kYellow,
+                    height: 1.1,
+                  ),
+                ),
+              ),
+          ],
+        );
+    }
+  }
+
+  Widget buildMemorize() {
+    return Column(
+      children: [
+        progressLabel(),
+        Expanded(
+          child: Center(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.all(kPad),
+                    child: Text(
+                      'Запомните',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: kSubSize,
+                        color: kText,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  showItems(ex.shown),
+                  const SizedBox(height: 24),
+                  Text(
+                    '$secondsLeft',
+                    style: const TextStyle(
+                      fontSize: kSubSize,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          Text(
-            digits.join('   '),
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 120,
-              fontWeight: FontWeight.w900,
-              color: kYellow,
-              height: 1.0,
+        ),
+      ],
+    );
+  }
+
+  Widget buildQuestion() {
+    final locked = phase != _ExPhase.question;
+    return Column(
+      children: [
+        progressLabel(),
+        Expanded(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(kPad),
+                  child: Text(
+                    ex.question,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: kTitleSize,
+                      fontWeight: FontWeight.bold,
+                      color: kText,
+                      height: 1.15,
+                    ),
+                  ),
+                ),
+                if (ex.questionShown.isNotEmpty) ...[
+                  showItems(ex.questionShown, digitSize: 80),
+                  const SizedBox(height: kPad),
+                ],
+                for (final o in ex.options) ...[
+                  BigButton(
+                    label: o.label,
+                    color: o.color != null ? Color(o.color!) : kBlue,
+                    textColor: o.color != null
+                        ? contrastOn(Color(o.color!))
+                        : kText,
+                    minHeight: kAnswerMinHeight,
+                    fontSize: ex.kind == ShowKind.digits ? 60 : kButtonSize,
+                    onPressed: locked ? null : () => answer(o.label),
+                  ),
+                  const SizedBox(height: kPad),
+                ],
+              ],
             ),
           ),
-          const SizedBox(height: 24),
-          Text(
-            '$secondsLeft',
-            style: const TextStyle(fontSize: kSubSize, color: Colors.white70),
-          ),
-        ],
-      );
-    }
+        ),
+      ],
+    );
+  }
 
-    if (correct != null) {
-      final ok = correct!;
-      return Padding(
+  Widget buildResult() {
+    final ok = lastCorrect ?? false;
+    return Center(
+      child: Padding(
         padding: const EdgeInsets.all(kPad),
         child: Text(
-          ok ? 'Верно!' : 'Неверно,\nбыло ${digits.first}',
+          ok ? 'Верно!' : 'Неверно.\nБыло: ${ex.correct}',
           textAlign: TextAlign.center,
           style: TextStyle(
-            fontSize: 64,
+            fontSize: 60,
             fontWeight: FontWeight.w900,
             color: ok ? kGreen : kRed,
             height: 1.15,
           ),
         ),
-      );
-    }
+      ),
+    );
+  }
 
-    return SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(kPad),
-            child: Text(
-              'Какое число\nбыло первым?',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: kTitleSize,
-                fontWeight: FontWeight.bold,
-                color: kText,
-                height: 1.15,
-              ),
-            ),
+  Widget buildSummary() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(kPad),
+        child: Text(
+          'Верно:\n$correctCount из ${session.length}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 64,
+            fontWeight: FontWeight.w900,
+            color: kGreen,
+            height: 1.15,
           ),
-          for (final o in options) ...[
-            BigButton(
-              label: '$o',
-              color: kBlue,
-              textColor: kText,
-              minHeight: 130,
-              fontSize: 60,
-              onPressed: () => answer(o),
-            ),
-            const SizedBox(height: kPad),
-          ],
-        ],
+        ),
       ),
     );
   }
 }
+
+/// Чёрный или белый текст в зависимости от яркости фона.
+Color contrastOn(Color bg) =>
+    bg.computeLuminance() > 0.4 ? Colors.black : Colors.white;
 
 // ---------------------------------------------------------------------------
 // Выбор пациента (скрытый полноэкранный overlay)
